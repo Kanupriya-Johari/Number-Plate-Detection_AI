@@ -1,186 +1,130 @@
-import sys
-import glob
-import os
-import glob
-import numpy as np
-import cv2
-from PIL import Image
-import pytesseract
-import re
-pytesseract.pytesseract.tesseract_cmd = 'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe'
-#Detecting numberplate
-def number_plate_detection(img):
-    def clean2_plate(plate):
-        gray_img = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY)
-    
-        _, thresh = cv2.threshold(gray_img, 110, 255, cv2.THRESH_BINARY)
-        if cv2.waitKey(0) & 0xff == ord('q'):
-            pass
-        num_contours,hierarchy = cv2.findContours(thresh.copy(),cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    
-        if num_contours:
-            contour_area = [cv2.contourArea(c) for c in num_contours]
-            max_cntr_index = np.argmax(contour_area)
-    
-            max_cnt = num_contours[max_cntr_index]
-            max_cntArea = contour_area[max_cntr_index]
-            x,y,w,h = cv2.boundingRect(max_cnt)
-    
-            if not ratioCheck(max_cntArea,w,h):
-                return plate,None
-    
-            final_img = thresh[y:y+h, x:x+w]
-            return final_img,[x,y,w,h]
-    
-        else:
-            return plate,None
-    
-    def ratioCheck(area, width, height):
-        ratio = float(width) / float(height)
-        if ratio < 1:
-            ratio = 1 / ratio
-        if (area < 1063.62 or area > 73862.5) or (ratio < 3 or ratio > 6):
-            return False
-        return True
-    
-    def isMaxWhite(plate):
-        avg = np.mean(plate)
-        if(avg>=115):
-            return True
-        else:
-            return False
-    
-    def ratio_and_rotation(rect):
-        (x, y), (width, height), rect_angle = rect
-    
-        if(width>height):
-            angle = -rect_angle
-        else:
-            angle = 90 + rect_angle
-    
-        if angle>15:
-            return False
-    
-        if height == 0 or width == 0:
-            return False
-    
-        area = height*width
-        if not ratioCheck(area,width,height):
-            return False
-        else:
-            return True
-    
-    
-    img2 = cv2.GaussianBlur(img, (5,5), 0)
-    img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-    
-    img2 = cv2.Sobel(img2,cv2.CV_8U,1,0,ksize=3)	
-    _,img2 = cv2.threshold(img2,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-    
-    element = cv2.getStructuringElement(shape=cv2.MORPH_RECT, ksize=(17, 3))
-    morph_img_threshold = img2.copy()
-    cv2.morphologyEx(src=img2, op=cv2.MORPH_CLOSE, kernel=element, dst=morph_img_threshold)
-    num_contours, hierarchy= cv2.findContours(morph_img_threshold,mode=cv2.RETR_EXTERNAL,method=cv2.CHAIN_APPROX_NONE)
-    cv2.drawContours(img2, num_contours, -1, (0,255,0), 1)
-    
-    
-    for i,cnt in enumerate(num_contours):
-        min_rect = cv2.minAreaRect(cnt)
-        if ratio_and_rotation(min_rect):
-            x,y,w,h = cv2.boundingRect(cnt)
-            plate_img = img[y:y+h,x:x+w]
-            if(isMaxWhite(plate_img)):
-                clean_plate, rect = clean2_plate(plate_img)
-                if rect:
-                    fg=0
-                    x1,y1,w1,h1 = rect
-                    x,y,w,h = x+x1,y+y1,w1,h1
-                    plate_im = Image.fromarray(clean_plate)
-                    text = pytesseract.image_to_string(plate_im, lang='eng')
-                    return text
+__all__ = (
+    'get_training_model',
+    'get_detect_model',
+    'WINDOW_SHAPE',
+)
 
-#Quick sort
-def partition(arr,low,high): 
-    i = ( low-1 )         
-    pivot = arr[high]    
-  
-    for j in range(low , high): 
-        if   arr[j] < pivot: 
-            i = i+1 
-            arr[i],arr[j] = arr[j],arr[i] 
-  
-    arr[i+1],arr[high] = arr[high],arr[i+1] 
-    return ( i+1 ) 
 
-def quickSort(arr,low,high): 
-    if low < high: 
-        pi = partition(arr,low,high) 
-  
-        quickSort(arr, low, pi-1) 
-        quickSort(arr, pi+1, high)
-        
-    return arr
- 
-#Binary search   
-def binarySearch (arr, l, r, x): 
-  
-    if r >= l: 
-        mid = l + (r - l) // 2
-        if arr[mid] == x: 
-            return mid 
-        elif arr[mid] > x: 
-            return binarySearch(arr, l, mid-1, x) 
-        else: 
-            return binarySearch(arr, mid + 1, r, x) 
-    else: 
-        return -1
+import tensorflow as tf
+
+import common
+
+
+WINDOW_SHAPE = (64, 128)
+
+
+# Utility functions
+def weight_variable(shape):
+  initial = tf.truncated_normal(shape, stddev=0.1)
+  return tf.Variable(initial)
+
+
+def bias_variable(shape):
+  initial = tf.constant(0.1, shape=shape)
+  return tf.Variable(initial)
+
+
+def conv2d(x, W, stride=(1, 1), padding='SAME'):
+  return tf.nn.conv2d(x, W, strides=[1, stride[0], stride[1], 1],
+                      padding=padding)
+
+
+def max_pool(x, ksize=(2, 2), stride=(2, 2)):
+  return tf.nn.max_pool(x, ksize=[1, ksize[0], ksize[1], 1],
+                        strides=[1, stride[0], stride[1], 1], padding='SAME')
+
+
+def avg_pool(x, ksize=(2, 2), stride=(2, 2)):
+  return tf.nn.avg_pool(x, ksize=[1, ksize[0], ksize[1], 1],
+                        strides=[1, stride[0], stride[1], 1], padding='SAME')
+
+
+def convolutional_layers():
+    """
+    Get the convolutional layers of the model.
+
+    """
+    x = tf.placeholder(tf.float32, [None, None, None])
+
+    # First layer
+    W_conv1 = weight_variable([5, 5, 1, 48])
+    b_conv1 = bias_variable([48])
+    x_expanded = tf.expand_dims(x, 3)
+    h_conv1 = tf.nn.relu(conv2d(x_expanded, W_conv1) + b_conv1)
+    h_pool1 = max_pool(h_conv1, ksize=(2, 2), stride=(2, 2))
+
+    # Second layer
+    W_conv2 = weight_variable([5, 5, 48, 64])
+    b_conv2 = bias_variable([64])
+
+    h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
+    h_pool2 = max_pool(h_conv2, ksize=(2, 1), stride=(2, 1))
+
+    # Third layer
+    W_conv3 = weight_variable([5, 5, 64, 128])
+    b_conv3 = bias_variable([128])
+
+    h_conv3 = tf.nn.relu(conv2d(h_pool2, W_conv3) + b_conv3)
+    h_pool3 = max_pool(h_conv3, ksize=(2, 2), stride=(2, 2))
+
+    return x, h_pool3, [W_conv1, b_conv1,
+                        W_conv2, b_conv2,
+                        W_conv3, b_conv3]
+
+
+def get_training_model():
+    """
+    The training model acts on a batch of 128x64 windows, and outputs a (1 +
+    7 * len(common.CHARS) vector, `v`. `v[0]` is the probability that a plate is
+    fully within the image and is at the correct scale.
     
+    `v[1 + i * len(common.CHARS) + c]` is the probability that the `i`'th
+    character is `c`.
 
-print("HELLO!!")
-print("Welcome to the Number Plate Detection System.\n")
-
-array=[]
-
-dir = os.path.dirname(__file__)
-
-for img in glob.glob(dir+"/Images/.jpeg") :
-    img=cv2.imread(img)
-    number_plate=number_plate_detection(img)
-    res2 = str(" ".join(re.split("[^a-zA-Z0-9]*", number_plate,)))
-    res2=res2.upper()
+    """
+    x, conv_layer, conv_vars = convolutional_layers()
     
+    # Densely connected layer
+    W_fc1 = weight_variable([32 * 8 * 128, 2048])    
+    b_fc1 = bias_variable([2048])
 
-    img2 = cv2.resize(img, (600, 600))
-    cv2.imshow("Image of car ",img2)
-    cv2.waitKey(1000)
-    cv2.destroyAllWindows()
-    print(res2)
-    array.append(res2)
-        
+    conv_layer_flat = tf.reshape(conv_layer, [-1, 32 * 8 * 128])  
+    h_fc1 = tf.nn.relu(tf.matmul(conv_layer_flat, W_fc1) + b_fc1)
 
-#Sorting
-array=quickSort(array,0,len(array)-1)
-print ("\n\n")
-print("The Vehicle numbers registered are:-")
-for i in array:
-    print(i)
-print ("\n\n")    
+    # Output layer
+    W_fc2 = weight_variable([2048, 1 + 10 * len(common.CHARS)])  #7 changed to 10 char
+    b_fc2 = bias_variable([1 + 10 * len(common.CHARS)])          #7 changed to 10 char
 
-#Searching
-for img in glob.glob(dir+"/search/*.jpeg"):
-    img=cv2.imread(img)
+    y = tf.matmul(h_fc1, W_fc2) + b_fc2
+
+    return (x, y, conv_vars + [W_fc1, b_fc1, W_fc2, b_fc2])
+
+
+def get_detect_model():
+    """
+    The same as the training model, except it acts on an arbitrarily sized
+    input, and slides the 128x64 window across the image in 8x8 strides.
+
+    The output is of the form `v`, where `v[i, j]` is equivalent to the output
+    of the training model, for the window at coordinates `(8 * i, 4 * j)`.
+
+    """
+    x, conv_layer, conv_vars = convolutional_layers()
     
-    number_plate=number_plate_detection(img)
-    res2 = str("".join(re.split("[^a-zA-Z0-9]", number_plate)))
+    # Fourth layer
+    W_fc1 = weight_variable([8 * 32 * 128, 2048]) 
+    W_conv1 = tf.reshape(W_fc1, [8,  32, 128, 2048]) 
+    b_fc1 = bias_variable([2048])
+    h_conv1 = tf.nn.relu(conv2d(conv_layer, W_conv1,
+                                stride=(1, 1), padding="VALID") + b_fc1) 
+    # Fifth layer
+    W_fc2 = weight_variable([2048, 1 + 10 * len(common.CHARS)])   #7 changed to 10 char
+    W_conv2 = tf.reshape(W_fc2, [1, 1, 2048, 1 + 10 * len(common.CHARS)])   #7 changed to 10 char
+    b_fc2 = bias_variable([1 + 10 * len(common.CHARS)])     #7 changed to 10 char
+    h_conv2 = conv2d(h_conv1, W_conv2) + b_fc2
 
-    print("The car number to search is:- ", res2)
-    
+    return (x, h_conv2, conv_vars + [W_fc1, b_fc1, W_fc2, b_fc2])
 
-    result = binarySearch(array,0,len(array)-1,res2)
-    if result != -1: 
-        print ("\n\nThe Vehicle is allowed to visit." ) 
-    else: 
-        print ("\n\nThe Vehicle is  not allowed to visit.")
         
 
     			
